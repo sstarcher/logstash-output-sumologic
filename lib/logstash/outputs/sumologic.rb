@@ -1,4 +1,5 @@
 # encoding: utf-8
+
 require "logstash/json"
 require "logstash/namespace"
 require "logstash/outputs/base"
@@ -59,6 +60,12 @@ class LogStash::Outputs::SumoLogic < LogStash::Outputs::Base
   # The encoding method of compress
   config :compress_encoding, :validate =>:string, :default => DEFLATE
 
+  # Max size of memory queue
+  config :queue_max, :validate => :number, :default => 65536
+
+  # Max size of HTTP client pool
+  config :pool_max, :validate => :number, :default => 10
+
   # Hold messages for at least (x) seconds as a pile; 0 means sending every events immediately  
   config :interval, :validate => :number, :default => 0
 
@@ -109,6 +116,7 @@ class LogStash::Outputs::SumoLogic < LogStash::Outputs::Base
     @pool_max.times { |t| @request_tokens << true }
     @timer = Time.now
     @pile = Array.new
+    @pile_size = 0
     @semaphore = Mutex.new
     connect
   end # def register
@@ -157,7 +165,15 @@ class LogStash::Outputs::SumoLogic < LogStash::Outputs::Base
   private
   def queue_and_send(content)
     if @interval <= 0 # means send immediately
-      send_request(content)
+      @semaphore.synchronize {
+        if @pile_size + content.length > @queue_max
+          send_request(@pile.join($/))
+          @pile.clear
+          @pile_size = 0
+        end
+        @pile << content
+        @pile_size += content.length
+      }
     else
       @semaphore.synchronize {
         now = Time.now
